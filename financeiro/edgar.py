@@ -17,8 +17,11 @@ _BASE = "https://data.sec.gov"
 
 
 def _ua() -> str:
-    # A SEC pede um User-Agent identificável; configurável via secret SEC_CONTACT.
-    return secret("SEC_CONTACT") or "Analista Financeiro (contacto: app user)"
+    # A SEC exige um User-Agent com contacto (nome + email). Configurável via
+    # secret SEC_CONTACT; o valor por omissão cumpre o formato exigido.
+    return secret("SEC_CONTACT") or (
+        "Analista Financeiro app admin@analista-financeiro.app"
+    )
 
 
 @st.cache_data(ttl=86_400, show_spinner=False)
@@ -26,8 +29,12 @@ def company_facts(cik: str) -> dict:
     cik10 = str(cik).lstrip("CIK").zfill(10)
     r = requests.get(
         f"{_BASE}/api/xbrl/companyfacts/CIK{cik10}.json",
-        headers={"User-Agent": _ua(), "Accept": "application/json"},
-        timeout=30,
+        headers={
+            "User-Agent": _ua(),
+            "Accept": "application/json",
+            "Accept-Encoding": "gzip, deflate",
+        },
+        timeout=45,
     )
     r.raise_for_status()
     return r.json()
