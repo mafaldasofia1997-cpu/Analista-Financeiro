@@ -1,0 +1,11 @@
+[
+  { "symbol": "AAPL", "name": "Apple Inc." },
+  { "symbol": "AMZN", "name": "Amazon.com, Inc." },
+  { "symbol": "NVDA", "name": "NVIDIA Corporation" },
+  { "symbol": "TSLA", "name": "Tesla, Inc." },
+  { "symbol": "LLY", "name": "Eli Lilly and Company" },
+  { "symbol": "PG", "name": "The Procter & Gamble Company" },
+  { "symbol": "KO", "name": "The Coca-Cola Company" },
+  { "symbol": "O", "name": "Realty Income Corporation" },
+  { "symbol": "BYDDY", "name": "BYD Company Limited (ADR)" }
+]
