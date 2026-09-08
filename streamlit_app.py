@@ -554,12 +554,22 @@ with tab_notes:
                 _deep = edgar.deep_annual_df(_cik, fmp_client.get_splits(symbol), max_years=20)
             except Exception:
                 _deep = None
-        _dmdf = load_metrics(symbol, "annual", _cik, 20)
-        secoes = company.build_dossier(symbol, profile, _cik, _deep, _dmdf)
+        try:
+            _dmdf = load_metrics(symbol, "annual", _cik, 20)
+        except Exception:
+            _dmdf = None
+        try:
+            secoes = company.build_dossier(symbol, profile, _cik, _deep, _dmdf)
+        except Exception as exc:  # nunca deixar o dossiê rebentar a app
+            secoes = []
+            st.error(f"Não foi possível montar o dossiê completo: {exc}")
 
     for titulo, corpo in secoes:
         st.markdown(f"#### {titulo}")
-        st.markdown(corpo)
+        try:
+            st.markdown(corpo)
+        except Exception:
+            st.caption("(secção indisponível)")
         st.divider()
 
     st.markdown("#### Notas adicionais")
