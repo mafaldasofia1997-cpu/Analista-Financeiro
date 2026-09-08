@@ -12,7 +12,17 @@ from datetime import datetime, timezone
 import pandas as pd
 import streamlit as st
 
-from financeiro import access, charts, fmp_client, fundamentals, notes, store, ui
+from financeiro import (
+    access,
+    charts,
+    company,
+    edgar,
+    fmp_client,
+    fundamentals,
+    notes,
+    store,
+    ui,
+)
 from financeiro.config import get_api_key
 from financeiro.fmp_client import FMPError
 from financeiro.news import FONTES_LABEL as NEWS_FONTES, get_recent_news
@@ -309,22 +319,37 @@ with tab_fin:
                 )
 
 # --------------------------------------------------------------------------- #
-# Helper partilhado — junta resultados/rácios/key-metrics/fluxos/balanço
+# Helper partilhado — junta as métricas (FMP; ou SEC EDGAR para o histórico longo)
 # --------------------------------------------------------------------------- #
-def load_metrics(sym: str, period: str) -> pd.DataFrame:
+def load_metrics(sym: str, period: str, cik: str | None = None, years: int = 5) -> pd.DataFrame:
+    # Histórico anual longo via SEC EDGAR (empresas dos EUA)
+    if period == "annual" and cik and years > 5:
+        try:
+            splits = fmp_client.get_splits(sym)
+            deep = edgar.deep_annual_df(cik, splits, max_years=years)
+            if len(deep) > 5:
+                prices = fmp_client.get_price_history_deep(sym, years=years + 2)
+                mdf = fundamentals.deep_annual_metrics(deep, prices)
+                mdf.attrs["fonte"] = f"SEC EDGAR — {len(mdf)} anos (ajustado a splits)"
+                return mdf
+        except Exception:
+            pass  # cai para a FMP
+
     def g(fn):
         try:
             return fn(sym, period)
         except FMPError:
             return []
 
-    return fundamentals.metrics_df(
+    mdf = fundamentals.metrics_df(
         g(fmp_client.get_income_statement),
         g(fmp_client.get_ratios),
         g(fmp_client.get_key_metrics),
         g(fmp_client.get_cash_flow),
         g(fmp_client.get_balance_sheet),
     )
+    mdf.attrs["fonte"] = f"FMP — {len(mdf)} períodos (plano gratuito: máx. 5)"
+    return mdf
 
 
 _FLAG = {"ok": "🟢", "warn": "🟡", "bad": "🔴", None: "⚪"}
@@ -359,6 +384,11 @@ with tab_trends:
         "Sobreposição", list(fundamentals.PRESETS) + ["Personalizado"]
     )
 
+    cik = profile.get("cik")
+    anos_t = 5
+    if api_period_c == "annual" and cik:
+        anos_t = st.slider("Nº de anos", 5, 20, 15, key="trend_years")
+
     if preset == "Personalizado":
         metrics = st.multiselect(
             "Métricas (agrupadas por unidade — até 3 eixos)",
@@ -369,7 +399,7 @@ with tab_trends:
         metrics = fundamentals.PRESETS[preset]
         st.caption("Séries: " + " · ".join(metrics))
 
-    mdf = load_metrics(symbol, api_period_c)
+    mdf = load_metrics(symbol, api_period_c, cik, anos_t)
 
     if api_period_c == "quarter":
         st.caption(
@@ -382,7 +412,7 @@ with tab_trends:
     elif not metrics:
         st.info("Escolhe pelo menos uma métrica.")
     else:
-        st.caption(f"{len(mdf)} período(s) — o plano gratuito da FMP devolve no máximo 5.")
+        st.caption(f"Fonte: {mdf.attrs.get('fonte', '—')}.")
         series: list[dict] = []
         faltam: list[str] = []
         for label in metrics:
@@ -436,13 +466,19 @@ with tab_trends:
 with tab_ratios:
     st.subheader("Rácios & Qualidade")
     rp = st.radio("Periodicidade", PERIODOS, horizontal=True, key="rat_periodo")
-    rmdf = load_metrics(symbol, _PERIODO_API[rp])
+    rcik = profile.get("cik")
+    ranos = 5
+    if _PERIODO_API[rp] == "annual" and rcik:
+        ranos = st.slider("Nº de anos", 5, 20, 15, key="rat_years")
+    rmdf = load_metrics(symbol, _PERIODO_API[rp], rcik, ranos)
 
     if rmdf.empty:
         st.info("Sem dados financeiros.")
     else:
         last = rmdf.index[-1]
-        st.caption(f"Valores do período mais recente disponível: **{last}**.")
+        st.caption(
+            f"Fonte: {rmdf.attrs.get('fonte', '—')}. Valores do período mais recente: **{last}**."
+        )
 
         rows = []
         for label, col, kind, test, nota in fundamentals.RATIO_ROWS:
@@ -500,31 +536,44 @@ with tab_ratios:
         )
 
 # --------------------------------------------------------------------------- #
-# Notas de análise — modelo de 10 pontos do livro, guardado em notes.json
+# Dossiê de análise — preenchido automaticamente (modelo do livro)
 # --------------------------------------------------------------------------- #
 with tab_notes:
-    st.subheader(f"Notas de análise — {symbol}")
+    st.subheader(f"Dossiê de análise — {company_name}")
     st.caption(
-        "Modelo de Análise Fundamental (Investidor Prudente). Os pontos quantitativos "
-        "(3 e 4) têm gráficos nas abas **Tendências** e **Rácios**; aqui registas as "
-        "conclusões e os pontos qualitativos. Guardado em `notes.json`."
+        "Preenchido automaticamente segundo o *Modelo de Análise Fundamental* de "
+        "César Borja (*Investidor Prudente*), com dados da FMP e da SEC EDGAR. "
+        "Os pontos quantitativos (cotação de longo prazo e tendências fundamentais) "
+        "estão nas abas **Tendências** e **Rácios**."
     )
+    _cik = profile.get("cik")
+    with st.spinner("A montar o dossiê..."):
+        _deep = None
+        if _cik:
+            try:
+                _deep = edgar.deep_annual_df(_cik, fmp_client.get_splits(symbol), max_years=20)
+            except Exception:
+                _deep = None
+        _dmdf = load_metrics(symbol, "annual", _cik, 20)
+        secoes = company.build_dossier(symbol, profile, _cik, _deep, _dmdf)
+
+    for titulo, corpo in secoes:
+        st.markdown(f"#### {titulo}")
+        st.markdown(corpo)
+        st.divider()
+
+    st.markdown("#### Notas adicionais")
     saved = notes.load(symbol)
     if is_editor:
-        with st.form("notas"):
-            valores: dict[str, str] = {}
-            for key, titulo, ajuda in notes.SECTIONS:
-                valores[key] = st.text_area(
-                    titulo, value=saved.get(key, ""), help=ajuda, height=110
-                )
-            if st.form_submit_button("💾 Guardar notas"):
-                notes.save(symbol, valores)
-                st.success("Notas guardadas.")
-    elif any(saved.get(k) for k, _, _ in notes.SECTIONS):
-        for key, titulo, _ in notes.SECTIONS:
-            if saved.get(key):
-                st.markdown(f"**{titulo}**")
-                st.write(saved[key])
-        st.caption("Só o autor pode editar as notas.")
+        txt = st.text_area(
+            "As tuas observações (por cima do dossiê automático)",
+            value=saved,
+            height=160,
+        )
+        if st.button("💾 Guardar notas"):
+            notes.save(symbol, txt)
+            st.success("Guardado.")
+    elif saved:
+        st.write(saved)
     else:
-        st.info("Ainda não há notas para esta ação.")
+        st.caption("Sem notas adicionais.")

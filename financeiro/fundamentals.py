@@ -299,7 +299,7 @@ def metrics_df(
     df["roeOp"] = (
         (col("operatingIncome") / equity)
         if equity is not None
-        else pd.Series(pd.NA, index=df.index, dtype="float64")
+        else pd.Series(float("nan"), index=df.index)
     )
     ie = safe(col("interestExpense"))
     icov = _coalesce(
@@ -311,6 +311,88 @@ def metrics_df(
     if "stockBasedCompensation" in df.columns and rev is not None:
         df["sbcToRevenue"] = df["stockBasedCompensation"].abs() / rev
 
+    return df
+
+
+def _close_near(price_rows: list[dict], iso_date: str) -> float | None:
+    """Fecho do último dia de negociação <= iso_date (rows: {date, close|price})."""
+    if not price_rows or not iso_date:
+        return None
+    pts = sorted(
+        (
+            (r.get("date", "")[:10], r.get("close", r.get("price")))
+            for r in price_rows
+            if r.get("close") is not None or r.get("price") is not None
+        )
+    )
+    best = None
+    for d, p in pts:
+        if d <= iso_date:
+            best = p
+        else:
+            break
+    return best if best is not None else (pts[0][1] if pts else None)
+
+
+def deep_annual_metrics(edgar_df: pd.DataFrame, price_rows: list[dict]) -> pd.DataFrame:
+    """Converte o histórico longo da SEC EDGAR + cotações num DataFrame anual
+    compatível com METRIC_CATALOG / RATIO_ROWS / PRESETS."""
+    df = edgar_df.copy()
+
+    def c(name: str) -> pd.Series:
+        return df[name] if name in df.columns else pd.Series(float("nan"), index=df.index)
+
+    def safe(s: pd.Series) -> pd.Series:
+        return s.replace(0, pd.NA)
+
+    rev, equity, ebitda = safe(c("revenue")), safe(c("totalStockholdersEquity")), safe(c("ebitda"))
+    ni = c("netIncome")
+
+    # capitalização histórica = cotação no fim do exercício × nº de ações diluído
+    if "periodEnd" in df.columns:
+        closes = pd.Series(
+            [_close_near(price_rows, str(e)) for e in df["periodEnd"]],
+            index=df.index, dtype="float64",
+        )
+        df["impliedPrice"] = closes
+        df["marketCap"] = closes * c("weightedAverageShsOutDil")
+        df["enterpriseValue"] = df["marketCap"] + c("netDebt")
+
+    mcap = safe(c("marketCap"))
+    df["freeCashFlow"] = c("operatingCashFlow") - c("capitalExpenditure").abs()
+
+    for src, dst in (
+        ("grossProfit", "grossProfitMargin"),
+        ("operatingIncome", "operatingProfitMargin"),
+        ("ebitda", "ebitdaMargin"),
+        ("netIncome", "netProfitMargin"),
+        ("freeCashFlow", "fcfMargin"),
+    ):
+        df[dst] = c(src) / rev
+
+    df["perAdj"] = (c("marketCap") / safe(ni)).where(ni > 0, 0)
+    df["priceToSalesRatio"] = c("marketCap") / rev
+    df["priceToBookRatio"] = c("marketCap") / equity
+    df["evToEBITDA"] = c("enterpriseValue") / ebitda
+    df["evToSales"] = c("enterpriseValue") / rev
+    df["netDebtToEBITDAc"] = c("netDebt") / ebitda
+    df["debtToEquityc"] = c("totalDebt") / equity
+    df["currentRatioc"] = c("totalCurrentAssets") / safe(c("totalCurrentLiabilities"))
+    df["roec"] = c("netIncome") / equity
+    df["roeOp"] = c("operatingIncome") / equity
+    # ROCE = EBIT / Capital Employed (Ativo - Passivo Corrente) — método 1 do livro
+    df["returnOnCapitalEmployed"] = c("operatingIncome") / safe(
+        c("totalAssets") - c("totalCurrentLiabilities")
+    )
+    # ROIC ≈ NOPAT / (Capital Próprio + Dívida Líquida), NOPAT ≈ EBIT × 0,79
+    df["returnOnInvestedCapital"] = (c("operatingIncome") * 0.79) / safe(
+        c("totalStockholdersEquity") + c("netDebt")
+    )
+    ie = safe(c("interestExpense"))
+    icov = c("operatingIncome") / ie.abs()
+    df["interestCoveragec"] = icov.where(icov > 0)
+    df["dividendYield"] = c("dividendsPaid").abs() / mcap
+    df["priceToEarningsGrowthRatio"] = pd.Series(float("nan"), index=df.index)
     return df
 
 

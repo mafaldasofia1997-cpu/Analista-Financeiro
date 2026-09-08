@@ -126,17 +126,73 @@ def get_ratios(symbol: str, period: str) -> list[dict]:
 
 
 @st.cache_data(ttl=21_600, show_spinner=False)
-def get_price_history(symbol: str, days: int = 730) -> list[dict]:
+def get_price_history(symbol: str, days: int = 730, light: bool = False) -> list[dict]:
     today = date.today()
     params = {
         "symbol": symbol,
         "from": (today - timedelta(days=days)).isoformat(),
         "to": today.isoformat(),
     }
-    data = _get("historical-price-eod/full", params)
+    endpoint = "historical-price-eod/light" if light else "historical-price-eod/full"
+    data = _get(endpoint, params)
     if isinstance(data, dict):  # tolerância a formatos antigos
         return data.get("historical", []) or []
     return data or []
+
+
+@st.cache_data(ttl=43_200, show_spinner=False)
+def get_price_history_deep(symbol: str, years: int = 20) -> list[dict]:
+    """Cotações de fecho de longo prazo (payload leve). O plano gratuito não
+    limita o intervalo do histórico de preços, só o das demonstrações."""
+    return get_price_history(symbol, days=int(years * 365.25) + 5, light=True)
+
+
+@st.cache_data(ttl=43_200, show_spinner=False)
+def get_peers(symbol: str) -> list[dict]:
+    return _get("stock-peers", {"symbol": symbol}) or []
+
+
+@st.cache_data(ttl=43_200, show_spinner=False)
+def get_key_executives(symbol: str) -> list[dict]:
+    return _get("key-executives", {"symbol": symbol}) or []
+
+
+@st.cache_data(ttl=43_200, show_spinner=False)
+def get_product_segments(symbol: str) -> list[dict]:
+    return _get("revenue-product-segmentation", {"symbol": symbol}) or []
+
+
+@st.cache_data(ttl=43_200, show_spinner=False)
+def get_geo_segments(symbol: str) -> list[dict]:
+    return _get("revenue-geographic-segmentation", {"symbol": symbol}) or []
+
+
+@st.cache_data(ttl=21_600, show_spinner=False)
+def get_shares_float(symbol: str) -> list[dict]:
+    return _get("shares-float", {"symbol": symbol}) or []
+
+
+@st.cache_data(ttl=21_600, show_spinner=False)
+def get_price_target_summary(symbol: str) -> list[dict]:
+    return _get("price-target-summary", {"symbol": symbol}) or []
+
+
+@st.cache_data(ttl=21_600, show_spinner=False)
+def get_grades(symbol: str) -> list[dict]:
+    return _get("grades", {"symbol": symbol}) or []
+
+
+@st.cache_data(ttl=43_200, show_spinner=False)
+def get_analyst_estimates(symbol: str, period: str = "annual", limit: int = 5) -> list[dict]:
+    return _get("analyst-estimates", {"symbol": symbol, "period": period, "limit": limit}) or []
+
+
+@st.cache_data(ttl=86_400, show_spinner=False)
+def get_splits(symbol: str) -> list[dict]:
+    try:
+        return _get("splits", {"symbol": symbol}) or []
+    except FMPError:
+        return []
 
 
 @st.cache_data(ttl=900, show_spinner=False)
