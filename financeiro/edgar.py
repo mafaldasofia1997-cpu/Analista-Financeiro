@@ -5,6 +5,7 @@ limites relevantes. Precisa do CIK da empresa (vem no `profile` da FMP).
 """
 from __future__ import annotations
 
+import time
 from datetime import date
 
 import pandas as pd
@@ -24,32 +25,36 @@ def _ua() -> str:
     )
 
 
-@st.cache_data(ttl=86_400, show_spinner=False)
-def company_facts(cik: str) -> dict:
-    cik10 = str(cik).lstrip("CIK").zfill(10)
-    r = requests.get(
-        f"{_BASE}/api/xbrl/companyfacts/CIK{cik10}.json",
-        headers={
-            "User-Agent": _ua(),
-            "Accept": "application/json",
-            "Accept-Encoding": "gzip, deflate",
-        },
-        timeout=45,
-    )
+def _get_json(url: str, timeout: int = 45) -> dict:
+    """GET com o User-Agent exigido pela SEC e uma tentativa extra em 403/429."""
+    headers = {
+        "User-Agent": _ua(),
+        "Accept": "application/json",
+        "Accept-Encoding": "gzip, deflate",
+        "Host": "data.sec.gov",
+    }
+    for attempt in range(2):
+        r = requests.get(url, headers=headers, timeout=timeout)
+        if r.status_code in (403, 429) and attempt == 0:
+            time.sleep(1.2)
+            continue
+        r.raise_for_status()
+        return r.json()
     r.raise_for_status()
     return r.json()
 
 
 @st.cache_data(ttl=86_400, show_spinner=False)
+def company_facts(cik: str) -> dict:
+    cik10 = str(cik).lstrip("CIK").zfill(10)
+    return _get_json(f"{_BASE}/api/xbrl/companyfacts/CIK{cik10}.json")
+
+
+@st.cache_data(ttl=86_400, show_spinner=False)
 def latest_10k(cik: str) -> dict | None:
     cik10 = str(cik).lstrip("CIK").zfill(10)
-    r = requests.get(
-        f"{_BASE}/submissions/CIK{cik10}.json",
-        headers={"User-Agent": _ua(), "Accept": "application/json"},
-        timeout=30,
-    )
-    r.raise_for_status()
-    rec = r.json().get("filings", {}).get("recent", {})
+    data = _get_json(f"{_BASE}/submissions/CIK{cik10}.json", timeout=30)
+    rec = data.get("filings", {}).get("recent", {})
     for i, form in enumerate(rec.get("form", [])):
         if form == "10-K":
             acc = rec["accessionNumber"][i].replace("-", "")
