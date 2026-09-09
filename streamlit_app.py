@@ -323,17 +323,25 @@ with tab_fin:
 # --------------------------------------------------------------------------- #
 def load_metrics(sym: str, period: str, cik: str | None = None, years: int = 5) -> pd.DataFrame:
     # Histórico anual longo via SEC EDGAR (empresas dos EUA)
-    if period == "annual" and cik and years > 5:
-        try:
-            splits = fmp_client.get_splits(sym)
-            deep = edgar.deep_annual_df(cik, splits, max_years=years)
-            if len(deep) > 5:
-                prices = fmp_client.get_price_history_deep(sym, years=years + 2)
-                mdf = fundamentals.deep_annual_metrics(deep, prices)
-                mdf.attrs["fonte"] = f"SEC EDGAR — {len(mdf)} anos (ajustado a splits)"
-                return mdf
-        except Exception:
-            pass  # cai para a FMP
+    nota_fallback = ""
+    if period == "annual" and years > 5:
+        if not cik:
+            nota_fallback = " · histórico longo só para empresas dos EUA (esta não tem registo na SEC)"
+        else:
+            try:
+                splits = fmp_client.get_splits(sym)
+                deep = edgar.deep_annual_df(cik, splits, max_years=years)
+                if len(deep) > 5:
+                    prices = fmp_client.get_price_history_deep(sym, years=years + 2)
+                    mdf = fundamentals.deep_annual_metrics(deep, prices)
+                    mdf.attrs["fonte"] = f"SEC EDGAR — {len(mdf)} anos (ajustado a splits)"
+                    return mdf
+                nota_fallback = " · a SEC não devolveu histórico suficiente"
+            except Exception:
+                nota_fallback = (
+                    " · a SEC bloqueou o pedido do servidor — adiciona o secret "
+                    "SEC_CONTACT (ver README)"
+                )
 
     def g(fn):
         try:
@@ -348,7 +356,7 @@ def load_metrics(sym: str, period: str, cik: str | None = None, years: int = 5) 
         g(fmp_client.get_cash_flow),
         g(fmp_client.get_balance_sheet),
     )
-    mdf.attrs["fonte"] = f"FMP — {len(mdf)} períodos (plano gratuito: máx. 5)"
+    mdf.attrs["fonte"] = f"FMP — {len(mdf)} períodos (plano gratuito: máx. 5){nota_fallback}"
     return mdf
 
 
