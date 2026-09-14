@@ -10,6 +10,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 import pandas as pd
+import requests
 import streamlit as st
 
 from financeiro import (
@@ -43,6 +44,7 @@ DEFAULT_PORTFOLIO = [
     {"symbol": "KO", "name": "The Coca-Cola Company"},
     {"symbol": "O", "name": "Realty Income Corporation"},
     {"symbol": "BYDDY", "name": "BYD Company Limited (ADR)"},
+    {"symbol": "SWBI", "name": "Smith & Wesson Brands, Inc."},
 ]
 
 
@@ -140,11 +142,17 @@ symbol: str = st.session_state.symbol
 # --------------------------------------------------------------------------- #
 try:
     profile = fmp_client.get_profile(symbol)
-    quote = fmp_client.get_quote(symbol)
 except FMPError as exc:
     st.title("📈 Analista Financeiro")
     st.error(f"Não foi possível carregar **{symbol}**: {exc}")
     st.stop()
+
+quote_erro = ""
+try:
+    quote = fmp_client.get_quote(symbol)
+except FMPError as exc:
+    quote = {}
+    quote_erro = str(exc)
 
 company_name = profile.get("companyName") or symbol
 currency = profile.get("currency") or "USD"
@@ -181,6 +189,8 @@ c1.metric(
 c2.metric("Capitalização", _money(quote.get("marketCap")))
 c3.metric("Máx 52 sem.", f"{quote.get('yearHigh'):,.2f}" if quote.get("yearHigh") else "—")
 c4.metric("Mín 52 sem.", f"{quote.get('yearLow'):,.2f}" if quote.get("yearLow") else "—")
+if quote_erro:
+    st.caption(f"ℹ️ Cotação indisponível para {symbol}: {quote_erro}")
 
 tab_overview, tab_news, tab_fin, tab_trends, tab_ratios, tab_notes = st.tabs(
     [
@@ -279,24 +289,48 @@ with tab_fin:
     }[demo_key]
 
     rows: list[dict] = []
+    fmp_erro = ""
     try:
         rows = fetch(symbol, api_period)
     except FMPError as exc:
-        st.error(str(exc))
+        fmp_erro = str(exc)
 
-    if not rows:
+    df = fundamentals.build_statement_df(rows, demo_key) if rows else None
+    usou_edgar = False
+
+    if df is None and api_period == "annual" and profile.get("cik"):
+        # A FMP pode não cobrir este símbolo (alguns small-caps ficam bloqueados
+        # no plano gratuito) — cai para a SEC EDGAR, que é sempre gratuita.
+        try:
+            _deep_fin = edgar.deep_annual_df(
+                profile["cik"], fmp_client.get_splits(symbol), max_years=20
+            )
+            if len(_deep_fin):
+                df = fundamentals.edgar_statement_df(_deep_fin, demo_key)
+                usou_edgar = True
+        except Exception:
+            df = None
+
+    if df is None or df.empty:
+        if fmp_erro:
+            st.error(fmp_erro)
         st.info("Sem dados para esta demonstração / periodicidade.")
     else:
-        df = fundamentals.build_statement_df(rows, demo_key)
         recent = df.iloc[::-1]  # mais recente primeiro, para leitura
         st.dataframe(
             recent.T.style.format("{:,.0f}", na_rep="—"),
             width="stretch",
         )
-        st.caption(
-            "Valores em moeda de reporte (exceto EPS, por ação). "
-            "O plano gratuito da FMP devolve no máximo 5 períodos."
-        )
+        if usou_edgar:
+            st.caption(
+                "ℹ️ A FMP não tem esta demonstração para este símbolo no plano "
+                "gratuito — dados obtidos diretamente da SEC EDGAR (histórico completo)."
+            )
+        else:
+            st.caption(
+                "Valores em moeda de reporte (exceto EPS, por ação). "
+                "O plano gratuito da FMP devolve no máximo 5 períodos."
+            )
 
         monetarias = [c for c in df.columns if c not in fundamentals.NAO_MONETARIOS]
         g1, g2 = st.columns(2)
@@ -337,6 +371,18 @@ def load_metrics(sym: str, period: str, cik: str | None = None, years: int = 5) 
                     mdf.attrs["fonte"] = f"SEC EDGAR — {len(mdf)} anos (ajustado a splits)"
                     return mdf
                 nota_fallback = " · a SEC não devolveu histórico suficiente"
+            except requests.exceptions.HTTPError as exc:
+                status = exc.response.status_code if exc.response is not None else None
+                if status == 404:
+                    nota_fallback = (
+                        " · esta empresa não tem registo XBRL na SEC "
+                        "(normal para emissores estrangeiros, ex.: ADRs)"
+                    )
+                else:
+                    nota_fallback = (
+                        f" · a SEC recusou o pedido (HTTP {status}) — adiciona o "
+                        "secret SEC_CONTACT (ver README)"
+                    )
             except Exception:
                 nota_fallback = (
                     " · a SEC bloqueou o pedido do servidor — adiciona o secret "

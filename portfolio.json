@@ -7,5 +7,6 @@
   { "symbol": "PG", "name": "The Procter & Gamble Company" },
   { "symbol": "KO", "name": "The Coca-Cola Company" },
   { "symbol": "O", "name": "Realty Income Corporation" },
-  { "symbol": "BYDDY", "name": "BYD Company Limited (ADR)" }
+  { "symbol": "BYDDY", "name": "BYD Company Limited (ADR)" },
+  { "symbol": "SWBI", "name": "Smith & Wesson Brands, Inc." }
 ]

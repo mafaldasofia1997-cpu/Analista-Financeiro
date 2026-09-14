@@ -40,6 +40,46 @@ SPECS: dict[str, list[tuple[str, str]]] = {
 # Rótulos que NÃO são valores monetários (não devem ser escalados para mil milhões)
 NAO_MONETARIOS = {"EPS ($)"}
 
+# Mesma ideia que SPECS, mas para o DataFrame anual da SEC EDGAR (fallback quando
+# a FMP não tem o símbolo/plano — ex.: alguns small-caps ficam bloqueados na FMP)
+_EDGAR_SPECS: dict[str, list[tuple[str, str]]] = {
+    "resultados": [
+        ("revenue", "Receita"),
+        ("grossProfit", "Lucro bruto"),
+        ("operatingIncome", "Resultado operacional"),
+        ("netIncome", "Resultado líquido"),
+        ("ebitda", "EBITDA"),
+        ("eps", "EPS ($)"),
+    ],
+    "balanco": [
+        ("totalAssets", "Ativo total"),
+        ("totalLiabilities", "Passivo total"),
+        ("totalStockholdersEquity", "Capital próprio"),
+        ("cashAndShortTermInvestments", "Caixa e investimentos CP"),
+        ("totalDebt", "Dívida total"),
+    ],
+    "fluxos": [
+        ("operatingCashFlow", "Fluxo de caixa operacional"),
+        ("capitalExpenditure", "CapEx"),
+        ("freeCashFlow", "Free cash flow"),
+        ("dividendsPaid", "Dividendos pagos"),
+    ],
+}
+
+
+def edgar_statement_df(deep_df: pd.DataFrame, statement_type: str) -> pd.DataFrame:
+    """Mesma forma que `build_statement_df`, a partir do DataFrame anual da EDGAR."""
+    spec = _EDGAR_SPECS[statement_type]
+    data: dict[str, pd.Series] = {}
+    for col, label in spec:
+        if col in deep_df.columns:
+            data[label] = deep_df[col]
+        elif col == "freeCashFlow" and {"operatingCashFlow", "capitalExpenditure"} <= set(deep_df.columns):
+            data[label] = deep_df["operatingCashFlow"] - deep_df["capitalExpenditure"].abs()
+    df = pd.DataFrame(data, index=deep_df.index)
+    df.index.name = "Período"
+    return df
+
 
 def _period_label(row: dict) -> str:
     year = str(
