@@ -6,6 +6,7 @@ limites relevantes. Precisa do CIK da empresa (vem no `profile` da FMP).
 from __future__ import annotations
 
 import time
+import urllib.parse
 from datetime import date
 
 import pandas as pd
@@ -31,7 +32,7 @@ def _get_json(url: str, timeout: int = 45) -> dict:
         "User-Agent": _ua(),
         "Accept": "application/json",
         "Accept-Encoding": "gzip, deflate",
-        "Host": "data.sec.gov",
+        "Host": urllib.parse.urlparse(url).netloc,
     }
     for attempt in range(2):
         r = requests.get(url, headers=headers, timeout=timeout)
@@ -42,6 +43,53 @@ def _get_json(url: str, timeout: int = 45) -> dict:
         return r.json()
     r.raise_for_status()
     return r.json()
+
+
+@st.cache_data(ttl=604_800, show_spinner=False)  # 7 dias — a lista muda pouco
+def _ticker_map() -> dict[str, dict]:
+    """{TICKER: {"cik": "0000320193", "title": "Apple Inc."}} — SEC, grátis, sem
+    limite prático (ficheiro único servido como estático), usado como alternativa
+    à FMP para obter o CIK e o nome da empresa quando a FMP está indisponível."""
+    data = _get_json("https://www.sec.gov/files/company_tickers.json", timeout=30)
+    out = {}
+    for row in data.values():
+        t = (row.get("ticker") or "").upper()
+        if t:
+            out[t] = {"cik": str(row["cik_str"]).zfill(10), "title": row.get("title")}
+    return out
+
+
+def ticker_to_cik(symbol: str) -> str | None:
+    row = _ticker_map().get(symbol.upper())
+    return row["cik"] if row else None
+
+
+def basic_profile(symbol: str) -> dict | None:
+    """Perfil mínimo a partir da SEC (sem chave) — usado quando a FMP falha por
+    completo (símbolo bloqueado ou quota diária esgotada). Cobre o essencial:
+    nome, CIK (essencial para o histórico longo), bolsa e uma proxy de indústria."""
+    row = _ticker_map().get(symbol.upper())
+    if not row:
+        return None
+    cik = row["cik"]
+    try:
+        sub = _get_json(f"{_BASE}/submissions/CIK{cik}.json", timeout=30)
+    except Exception:
+        sub = {}
+    exchanges = sub.get("exchanges") or []
+    return {
+        "symbol": symbol.upper(),
+        "companyName": row.get("title") or symbol.upper(),
+        "cik": cik,
+        "exchange": exchanges[0] if exchanges else None,
+        "sector": None,
+        "industry": sub.get("sicDescription"),
+        "country": sub.get("stateOfIncorporation") if len(sub.get("stateOfIncorporation") or "") == 2 else None,
+        "currency": "USD",
+        "description": None,
+        "website": None,
+        "ceo": None,
+    }
 
 
 @st.cache_data(ttl=86_400, show_spinner=False)

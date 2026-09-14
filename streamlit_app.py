@@ -23,10 +23,12 @@ from financeiro import (
     notes,
     store,
     ui,
+    yahoo,
 )
 from financeiro.config import get_api_key
 from financeiro.fmp_client import FMPError
 from financeiro.news import FONTES_LABEL as NEWS_FONTES, get_recent_news
+from financeiro.yahoo import YahooError
 
 st.set_page_config(page_title="Analista Financeiro", page_icon="📈", layout="wide")
 ui.inject_theme()
@@ -140,19 +142,37 @@ symbol: str = st.session_state.symbol
 # --------------------------------------------------------------------------- #
 # Dados base (perfil + cotação)
 # --------------------------------------------------------------------------- #
+profile_fonte = "FMP"
 try:
     profile = fmp_client.get_profile(symbol)
 except FMPError as exc:
-    st.title("📈 Analista Financeiro")
-    st.error(f"Não foi possível carregar **{symbol}**: {exc}")
-    st.stop()
+    # FMP indisponível (símbolo bloqueado ou quota diária ~250 esgotada) — tenta
+    # montar um perfil mínimo a partir da SEC (grátis, sem limite diário prático).
+    profile = edgar.basic_profile(symbol)
+    if profile:
+        profile_fonte = "SEC (perfil da FMP indisponível)"
+    else:
+        st.title("📈 Analista Financeiro")
+        st.error(f"Não foi possível carregar **{symbol}**: {exc}")
+        st.caption(
+            "Nem a SEC tem este símbolo registado (empresa não-EUA?). "
+            "Tenta mais tarde — a quota gratuita da FMP costuma renovar-se à meia-noite UTC."
+        )
+        st.stop()
 
 quote_erro = ""
+quote_fonte = "FMP"
 try:
     quote = fmp_client.get_quote(symbol)
 except FMPError as exc:
-    quote = {}
-    quote_erro = str(exc)
+    # FMP indisponível (bloqueio ou quota diária esgotada) — tenta a Yahoo Finance,
+    # que é gratuita, sem limite diário e independente da quota da FMP.
+    try:
+        quote = yahoo.get_quote_free(symbol)
+        quote_fonte = "Yahoo Finance"
+    except YahooError:
+        quote = {}
+        quote_erro = str(exc)
 
 company_name = profile.get("companyName") or symbol
 currency = profile.get("currency") or "USD"
@@ -167,6 +187,8 @@ meta = " · ".join(
     if x
 )
 ui.hero(f"{company_name} ({symbol})", meta)
+if profile_fonte != "FMP":
+    st.caption(f"ℹ️ Perfil via {profile_fonte} — alguns campos (descrição, CEO) ficam vazios.")
 
 def _money(v: object) -> str:
     if not isinstance(v, (int, float)) or not v:
@@ -186,11 +208,13 @@ c1.metric(
     f"{price_now:,.2f}" if price_now is not None else "—",
     f"{change_pct:+.2f}%" if change_pct is not None else None,
 )
-c2.metric("Capitalização", _money(quote.get("marketCap")))
+c2.metric("Capitalização", _money(quote.get("marketCap") or profile.get("marketCap")))
 c3.metric("Máx 52 sem.", f"{quote.get('yearHigh'):,.2f}" if quote.get("yearHigh") else "—")
 c4.metric("Mín 52 sem.", f"{quote.get('yearLow'):,.2f}" if quote.get("yearLow") else "—")
 if quote_erro:
     st.caption(f"ℹ️ Cotação indisponível para {symbol}: {quote_erro}")
+elif quote_fonte != "FMP":
+    st.caption(f"ℹ️ Cotação via {quote_fonte} (a FMP não respondeu para {symbol}).")
 
 tab_overview, tab_news, tab_fin, tab_trends, tab_ratios, tab_notes = st.tabs(
     [
@@ -236,14 +260,19 @@ with tab_overview:
             }
             st.table(pd.Series(table, name="Valor").to_frame())
     with right:
+        hist: list[dict] = []
         try:
             hist = fmp_client.get_price_history(symbol)
+        except FMPError:
+            try:
+                hist = yahoo.get_price_history_free(symbol)
+            except YahooError as exc:
+                st.caption(f"Sem histórico de preço: {exc}")
+        if hist:
             st.plotly_chart(
                 charts.price(hist, "Preço de fecho — 2 anos"),
                 width="stretch",
             )
-        except FMPError as exc:
-            st.caption(f"Sem histórico de preço: {exc}")
 
 # --------------------------------------------------------------------------- #
 # Notícias (últimas 48 h)
@@ -366,7 +395,12 @@ def load_metrics(sym: str, period: str, cik: str | None = None, years: int = 5) 
                 splits = fmp_client.get_splits(sym)
                 deep = edgar.deep_annual_df(cik, splits, max_years=years)
                 if len(deep) > 5:
-                    prices = fmp_client.get_price_history_deep(sym, years=years + 2)
+                    # Yahoo Finance é gratuita e sem limite diário — poupa a quota
+                    # da FMP para este pedido, que corre sempre que se escolhe Anual.
+                    try:
+                        prices = yahoo.get_price_history_deep_free(sym, years=years + 2)
+                    except YahooError:
+                        prices = fmp_client.get_price_history_deep(sym, years=years + 2)
                     mdf = fundamentals.deep_annual_metrics(deep, prices)
                     mdf.attrs["fonte"] = f"SEC EDGAR — {len(mdf)} anos (ajustado a splits)"
                     return mdf
@@ -600,31 +634,48 @@ with tab_notes:
         "Os pontos quantitativos (cotação de longo prazo e tendências fundamentais) "
         "estão nas abas **Tendências** e **Rácios**."
     )
-    _cik = profile.get("cik")
-    with st.spinner("A montar o dossiê..."):
-        _deep = None
-        if _cik:
-            try:
-                _deep = edgar.deep_annual_df(_cik, fmp_client.get_splits(symbol), max_years=20)
-            except Exception:
-                _deep = None
-        try:
-            _dmdf = load_metrics(symbol, "annual", _cik, 20)
-        except Exception:
-            _dmdf = None
-        try:
-            secoes = company.build_dossier(symbol, profile, _cik, _deep, _dmdf)
-        except Exception as exc:  # nunca deixar o dossiê rebentar a app
-            secoes = []
-            st.error(f"Não foi possível montar o dossiê completo: {exc}")
 
-    for titulo, corpo in secoes:
-        st.markdown(f"#### {titulo}")
-        try:
-            st.markdown(corpo)
-        except Exception:
-            st.caption("(secção indisponível)")
-        st.divider()
+    # O dossiê faz ~8 pedidos extra à FMP (concorrentes, gestão, segmentos,
+    # estimativas, price targets, ratings...) — só carrega quando pedido, para
+    # poupar a quota diária gratuita (~250/dia) partilhada por toda a app.
+    _dossier_key = f"dossier_shown_{symbol}"
+    if not st.session_state.get(_dossier_key):
+        st.info(
+            "Este dossiê faz cerca de 8 pedidos adicionais à FMP (concorrentes, "
+            "gestão, segmentos, estimativas de analistas...). Carrega só quando "
+            "precisares, para não gastar a quota diária gratuita à toa."
+        )
+        if st.button("📋 Gerar dossiê de análise", type="primary"):
+            st.session_state[_dossier_key] = True
+            st.rerun()
+    else:
+        if st.button("🔄 Atualizar dossiê"):
+            st.rerun()
+        _cik = profile.get("cik")
+        with st.spinner("A montar o dossiê..."):
+            _deep = None
+            if _cik:
+                try:
+                    _deep = edgar.deep_annual_df(_cik, fmp_client.get_splits(symbol), max_years=20)
+                except Exception:
+                    _deep = None
+            try:
+                _dmdf = load_metrics(symbol, "annual", _cik, 20)
+            except Exception:
+                _dmdf = None
+            try:
+                secoes = company.build_dossier(symbol, profile, _cik, _deep, _dmdf)
+            except Exception as exc:  # nunca deixar o dossiê rebentar a app
+                secoes = []
+                st.error(f"Não foi possível montar o dossiê completo: {exc}")
+
+        for titulo, corpo in secoes:
+            st.markdown(f"#### {titulo}")
+            try:
+                st.markdown(corpo)
+            except Exception:
+                st.caption("(secção indisponível)")
+            st.divider()
 
     st.markdown("#### Notas adicionais")
     saved = notes.load(symbol)
