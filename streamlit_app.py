@@ -47,6 +47,7 @@ DEFAULT_PORTFOLIO = [
     {"symbol": "O", "name": "Realty Income Corporation"},
     {"symbol": "BYDDY", "name": "BYD Company Limited (ADR)"},
     {"symbol": "SWBI", "name": "Smith & Wesson Brands, Inc."},
+    {"symbol": "ISRG", "name": "Intuitive Surgical, Inc."},
 ]
 
 

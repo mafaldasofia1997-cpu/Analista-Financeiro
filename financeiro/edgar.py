@@ -131,9 +131,13 @@ _CONCEPTS: dict[str, tuple[list[str], str]] = {
         "shares",
     ),
     "depreciationAndAmortization": (
+        # Algumas empresas (ex.: Intuitive Surgical) não publicam uma linha
+        # combinada — nesse caso fica só a depreciação, sem amortização de
+        # intangíveis (EBITDA ligeiramente subestimado, mas melhor que vazio).
         ["DepreciationDepletionAndAmortization",
          "DepreciationAmortizationAndAccretionNet",
-         "DepreciationAndAmortization"],
+         "DepreciationAndAmortization",
+         "Depreciation"],
         "USD",
     ),
     "interestExpense": (["InterestExpense", "InterestExpenseDebt"], "USD"),
