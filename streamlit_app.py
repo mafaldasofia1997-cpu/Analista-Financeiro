@@ -328,13 +328,15 @@ with tab_fin:
     df = fundamentals.build_statement_df(rows, demo_key) if rows else None
     usou_edgar = False
 
-    if df is None and api_period == "annual" and profile.get("cik"):
-        # A FMP pode não cobrir este símbolo (alguns small-caps ficam bloqueados
-        # no plano gratuito) — cai para a SEC EDGAR, que é sempre gratuita.
+    if df is None and profile.get("cik"):
+        # A FMP pode não cobrir este símbolo (bloqueado, ou quota diária ~250
+        # esgotada) — cai para a SEC EDGAR, que é sempre gratuita.
         try:
-            _deep_fin = edgar.deep_annual_df(
-                profile["cik"], fmp_client.get_splits(symbol), max_years=20
-            )
+            splits = fmp_client.get_splits(symbol)
+            if api_period == "annual":
+                _deep_fin = edgar.deep_annual_df(profile["cik"], splits, max_years=20)
+            else:
+                _deep_fin = edgar.deep_quarterly_df(profile["cik"], splits, max_quarters=8)
             if len(_deep_fin):
                 df = fundamentals.edgar_statement_df(_deep_fin, demo_key)
                 usou_edgar = True
@@ -385,44 +387,56 @@ with tab_fin:
 # --------------------------------------------------------------------------- #
 # Helper partilhado — junta as métricas (FMP; ou SEC EDGAR para o histórico longo)
 # --------------------------------------------------------------------------- #
+def _edgar_fallback(sym: str, cik: str, period: str, max_periods: int):
+    """Tenta obter métricas via SEC EDGAR (anual ou trimestral). (mdf|None, nota)."""
+    try:
+        splits = fmp_client.get_splits(sym)
+        if period == "annual":
+            deep = edgar.deep_annual_df(cik, splits, max_years=max_periods)
+        else:
+            deep = edgar.deep_quarterly_df(cik, splits, max_quarters=max_periods)
+        if len(deep) < 2:
+            return None, " · a SEC não devolveu histórico suficiente"
+        anos_preco = max(3, max_periods // 4 + 2) if period == "quarter" else max_periods + 2
+        try:
+            prices = yahoo.get_price_history_deep_free(sym, years=anos_preco)
+        except YahooError:
+            prices = fmp_client.get_price_history_deep(sym, years=anos_preco)
+        mdf = fundamentals.deep_annual_metrics(deep, prices)
+        unidade = "anos" if period == "annual" else "trimestres"
+        mdf.attrs["fonte"] = f"SEC EDGAR — {len(mdf)} {unidade} (ajustado a splits)"
+        return mdf, ""
+    except requests.exceptions.HTTPError as exc:
+        status = exc.response.status_code if exc.response is not None else None
+        if status == 404:
+            return None, (
+                " · esta empresa não tem registo XBRL na SEC "
+                "(normal para emissores estrangeiros, ex.: ADRs)"
+            )
+        return None, (
+            f" · a SEC recusou o pedido (HTTP {status}) — adiciona o "
+            "secret SEC_CONTACT (ver README)"
+        )
+    except Exception:
+        return None, (
+            " · a SEC bloqueou o pedido do servidor — adiciona o secret "
+            "SEC_CONTACT (ver README)"
+        )
+
+
 def load_metrics(sym: str, period: str, cik: str | None = None, years: int = 5) -> pd.DataFrame:
-    # Histórico anual longo via SEC EDGAR (empresas dos EUA)
     nota_fallback = ""
+
+    # Anual com histórico alargado (>5 anos): a SEC EDGAR dá muito mais história
+    # do que os 5 períodos do plano gratuito da FMP — tenta-se logo à cabeça.
     if period == "annual" and years > 5:
         if not cik:
             nota_fallback = " · histórico longo só para empresas dos EUA (esta não tem registo na SEC)"
         else:
-            try:
-                splits = fmp_client.get_splits(sym)
-                deep = edgar.deep_annual_df(cik, splits, max_years=years)
-                if len(deep) > 5:
-                    # Yahoo Finance é gratuita e sem limite diário — poupa a quota
-                    # da FMP para este pedido, que corre sempre que se escolhe Anual.
-                    try:
-                        prices = yahoo.get_price_history_deep_free(sym, years=years + 2)
-                    except YahooError:
-                        prices = fmp_client.get_price_history_deep(sym, years=years + 2)
-                    mdf = fundamentals.deep_annual_metrics(deep, prices)
-                    mdf.attrs["fonte"] = f"SEC EDGAR — {len(mdf)} anos (ajustado a splits)"
-                    return mdf
-                nota_fallback = " · a SEC não devolveu histórico suficiente"
-            except requests.exceptions.HTTPError as exc:
-                status = exc.response.status_code if exc.response is not None else None
-                if status == 404:
-                    nota_fallback = (
-                        " · esta empresa não tem registo XBRL na SEC "
-                        "(normal para emissores estrangeiros, ex.: ADRs)"
-                    )
-                else:
-                    nota_fallback = (
-                        f" · a SEC recusou o pedido (HTTP {status}) — adiciona o "
-                        "secret SEC_CONTACT (ver README)"
-                    )
-            except Exception:
-                nota_fallback = (
-                    " · a SEC bloqueou o pedido do servidor — adiciona o secret "
-                    "SEC_CONTACT (ver README)"
-                )
+            mdf, nota = _edgar_fallback(sym, cik, "annual", years)
+            if mdf is not None:
+                return mdf
+            nota_fallback = nota
 
     def g(fn):
         try:
@@ -437,6 +451,15 @@ def load_metrics(sym: str, period: str, cik: str | None = None, years: int = 5) 
         g(fmp_client.get_cash_flow),
         g(fmp_client.get_balance_sheet),
     )
+
+    # A FMP não devolveu nada (símbolo bloqueado, quota diária esgotada...) —
+    # tenta a SEC EDGAR como último recurso, mesmo em trimestral.
+    if mdf.empty and cik:
+        edgar_mdf, nota = _edgar_fallback(sym, cik, period, years if period == "annual" else 8)
+        if edgar_mdf is not None:
+            return edgar_mdf
+        nota_fallback = nota_fallback or nota
+
     mdf.attrs["fonte"] = f"FMP — {len(mdf)} períodos (plano gratuito: máx. 5){nota_fallback}"
     return mdf
 

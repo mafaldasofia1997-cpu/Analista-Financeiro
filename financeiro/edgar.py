@@ -261,7 +261,7 @@ def deep_annual_df(
     df = pd.DataFrame(
         {c: [(data[c].get(y) or (None, None))[0] for y in years] for c in _CONCEPTS},
         index=years,
-    )
+    ).apply(pd.to_numeric, errors="coerce")
     df.index.name = "Período"
     # data de fim de exercício por ano (para cruzar com cotações)
     ends: dict[str, str] = {}
@@ -286,5 +286,94 @@ def deep_annual_df(
     # dívida líquida = dívida total - caixa
     df["netDebt"] = df["totalDebt"] - df.get("cashAndShortTermInvestments", 0).fillna(0)
     # EBITDA aproximado = resultado operacional + D&A
+    df["ebitda"] = df["operatingIncome"] + df["depreciationAndAmortization"]
+    return df
+
+
+def _quarter_map(
+    node: dict, unit: str, is_duration: bool, prefer_original: bool = False
+) -> dict[str, tuple[float, str]]:
+    """{data_fim -> (valor, data_fim)} a partir de 10-Q (ou 10-K quando o
+    trimestre coincide com o fecho do ano fiscal), só trimestre discreto
+    (~75-100 dias) — exclui os acumulados semestrais/anuais que também
+    aparecem nos 10-Q para linhas de fluxo de caixa."""
+    arr = (node.get("units") or {}).get(unit) or []
+    by_end: dict[str, dict] = {}
+    for x in arr:
+        if x.get("form") not in ("10-Q", "10-Q/A", "10-K", "10-K/A"):
+            continue
+        end = x.get("end")
+        if not end:
+            continue
+        if is_duration:
+            start = x.get("start")
+            if not start:
+                continue
+            dur = (date.fromisoformat(end) - date.fromisoformat(start)).days
+            if not (75 <= dur <= 100):
+                continue
+        prev = by_end.get(end)
+        if prev is None:
+            by_end[end] = x
+            continue
+        if prefer_original:
+            end_year = int(end[:4])
+            key_new = (abs((x.get("fy") or end_year) - end_year), x["filed"])
+            key_old = (abs((prev.get("fy") or end_year) - end_year), prev["filed"])
+            if key_new < key_old:
+                by_end[end] = x
+        elif x["filed"] > prev["filed"]:
+            by_end[end] = x
+    return {end: (by_end[end]["val"], end) for end in by_end}
+
+
+def _series_q(facts: dict, concept: str) -> dict[str, tuple[float, str]]:
+    gaap = facts.get("facts", {}).get("us-gaap", {})
+    tags, unit = _CONCEPTS[concept]
+    merged: dict[str, tuple[float, str]] = {}
+    for tag in tags:
+        node = gaap.get(tag)
+        if not node:
+            continue
+        qmap = _quarter_map(
+            node, unit, concept in _DURATION, prefer_original=concept in _ORIGINAL
+        )
+        for end, pair in qmap.items():
+            merged.setdefault(end, pair)
+    return merged
+
+
+def _quarter_label(end_iso: str) -> str:
+    y, m = int(end_iso[:4]), int(end_iso[5:7])
+    return f"{y}-Q{(m - 1) // 3 + 1}"
+
+
+def deep_quarterly_df(
+    cik: str, splits: list[dict] | None = None, max_quarters: int = 8
+) -> pd.DataFrame:
+    """DataFrame trimestral (ex.: '2025-Q3'..'2026-Q2') a partir dos 10-Q —
+    usado quando a FMP não devolve a demonstração trimestral (bloqueio, quota)."""
+    facts = company_facts(cik)
+    data = {c: _series_q(facts, c) for c in _CONCEPTS}
+    ends = sorted({e for s in data.values() for e in s})[-max_quarters:]
+    df = pd.DataFrame(
+        {c: [(data[c].get(e) or (None, None))[0] for e in ends] for c in _CONCEPTS},
+        index=[_quarter_label(e) for e in ends],
+    ).apply(pd.to_numeric, errors="coerce")
+    df.index.name = "Período"
+    df["periodEnd"] = ends
+
+    if splits:
+        fac = pd.Series(
+            [_split_factor(splits, str(e)) for e in df["periodEnd"]], index=df.index
+        )
+        if "weightedAverageShsOutDil" in df.columns:
+            df["weightedAverageShsOutDil"] = df["weightedAverageShsOutDil"] * fac
+        if "eps" in df.columns:
+            df["eps"] = df["eps"] / fac.replace(0, 1)
+
+    df["totalDebt"] = df.get("shortTermDebt", 0).fillna(0) + df.get("longTermDebt", 0).fillna(0)
+    df["totalDebt"] = df["totalDebt"].where(df["totalDebt"] > 0)
+    df["netDebt"] = df["totalDebt"] - df.get("cashAndShortTermInvestments", 0).fillna(0)
     df["ebitda"] = df["operatingIncome"] + df["depreciationAndAmortization"]
     return df
