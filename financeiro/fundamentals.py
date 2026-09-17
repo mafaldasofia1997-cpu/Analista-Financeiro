@@ -451,9 +451,11 @@ def cagr(series: pd.Series) -> float | None:
     return (last / first) ** (1 / n) - 1
 
 
-# Linhas do painel "Rácios & Qualidade" — (rótulo, coluna, formato, teste, nota do livro)
+# Linhas do painel "Rácios & Qualidade" — (rótulo, coluna, formato, teste, como interpretar)
 #   formato: "pct" | "x" | "bn"
 #   teste(v) -> "ok" | "warn" | "bad" | None
+#   as bandas Bom/Médio/Atenção seguem regras gerais de mercado — variam por setor;
+#   o ideal é sempre comparar também com a média do setor e com o histórico da própria ação.
 def _t(ok, warn, *, invert=False, net_cash_ok=False):
     def test(v):
         if v is None or v != v:  # NaN
@@ -475,40 +477,52 @@ def _t(ok, warn, *, invert=False, net_cash_ok=False):
 
 
 RATIO_ROWS: list[tuple[str, str, str, object, str]] = [
-    ("ROE", "roec", "pct", _t(0.10, 0.05),
-     "O livro aprecia ROE > 10%."),
+    ("ROE", "roec", "pct", _t(0.15, 0.08),
+     "Bom: acima de 15% · Médio: 8%–15% · Atenção: abaixo de 8%. "
+     "Valores muito acima de 30% podem estar \"inflacionados\" por dívida elevada."),
     ("ROE operacional (EBIT / Capital Próprio)", "roeOp", "pct", _t(0.20, 0.10),
-     "O livro aprecia ROE operacional consistentemente > 20%."),
-    ("ROIC", "returnOnInvestedCapital", "pct", _t(0.20, 0.10),
-     "ROIC > 20% de forma consistente = negócio de muita qualidade (Munger)."),
+     "Consistentemente acima de 20% costuma indicar um negócio de alta qualidade."),
+    ("ROIC", "returnOnInvestedCapital", "pct", _t(0.15, 0.08),
+     "Bom: acima de 15% · Médio: 8%–15% · Atenção: abaixo de 8% (abaixo do custo de capital típico)."),
     ("ROCE", "returnOnCapitalEmployed", "pct", _t(0.15, 0.08),
-     "EBIT / Capital Employed."),
-    ("Margem bruta", "grossProfitMargin", "pct", None,
-     "Comparar com empresas da mesma indústria."),
-    ("Margem EBITDA", "ebitdaMargin", "pct", None, "EBITDA / Vendas."),
-    ("Margem operacional", "operatingProfitMargin", "pct", None, "EBIT / Vendas."),
-    ("Margem líquida", "netProfitMargin", "pct", None, "Resultado Líquido / Vendas."),
-    ("Margem FCF", "fcfMargin", "pct", _t(0.05, 0.0),
-     "Free Cash Flow / Vendas. Deve ser positiva."),
-    ("Net Debt / EBITDA", "netDebtToEBITDAc", "x", _t(3.0, 4.0, invert=True, net_cash_ok=True),
-     "O livro quer < 3. Negativo = posição de Net Cash (ótimo)."),
-    ("Dívida / Capital próprio", "debtToEquityc", "x", _t(0.5, 1.0, invert=True),
-     "O livro considera saudável a longo prazo se < 0,5."),
+     "Mede a eficiência a gerar lucro operacional com o capital empregado. Quanto mais alto, melhor."),
+    ("Margem bruta", "grossProfitMargin", "pct", _t(0.50, 0.30),
+     "Bom: acima de 50% · Médio: 30%–50% · Atenção: abaixo de 30%. Varia muito por indústria."),
+    ("Margem EBITDA", "ebitdaMargin", "pct", None,
+     "Rentabilidade operacional antes de juros, impostos, depreciações e amortizações."),
+    ("Margem operacional", "operatingProfitMargin", "pct", _t(0.20, 0.10),
+     "Bom: acima de 20% · Médio: 10%–20% · Atenção: abaixo de 10%."),
+    ("Margem líquida", "netProfitMargin", "pct", _t(0.15, 0.05),
+     "Bom: acima de 15% · Médio: 5%–15% · Atenção: abaixo de 5%."),
+    ("Margem FCF", "fcfMargin", "pct", _t(0.15, 0.05),
+     "Bom: acima de 15% · Médio: 5%–15% · Atenção: abaixo de 5%, ou negativa."),
+    ("Net Debt / EBITDA", "netDebtToEBITDAc", "x", _t(2.0, 4.0, invert=True, net_cash_ok=True),
+     "Bom: abaixo de 2× · Médio: 2×–4× · Atenção: acima de 4×. Negativo = posição de caixa líquida."),
+    ("Dívida / Capital próprio", "debtToEquityc", "x", _t(0.5, 1.5, invert=True),
+     "Bom: abaixo de 0,5× · Médio: 0,5×–1,5× · Atenção: acima de 1,5×–2×. "
+     "Normal ser mais alto em setores intensivos em capital (utilities, imobiliário)."),
     ("Interest coverage (EBIT / Juros)", "interestCoveragec", "x", _t(8.0, 3.0),
-     "Quanto mais alto, melhor."),
+     "Quanto mais alto, maior a folga para pagar os juros da dívida."),
     ("Current ratio", "currentRatioc", "x", _t(1.5, 1.0),
-     "Ativo Corrente / Passivo Corrente."),
-    ("PER (ajustado)", "perAdj", "x", None,
-     "Comparar com a própria média histórica (ver abaixo)."),
-    ("Price / Sales", "priceToSalesRatio", "x", None,
-     "Comparar com a própria média histórica."),
-    ("Price / Book", "priceToBookRatio", "x", None, "Relevante para Asset Plays."),
+     "Bom: 1,5×–2× ou mais · Médio: 1×–1,5× · Atenção: abaixo de 1×."),
+    ("PER (ajustado)", "perAdj", "x", _t(15.0, 25.0, invert=True),
+     "Bom: abaixo de 15× · Médio: 15×–25× · Atenção: acima de 25×. Varia muito por setor "
+     "(crescimento em tecnologia/saúde justifica valores mais altos) — comparar também com a própria média histórica."),
+    ("Price / Sales", "priceToSalesRatio", "x", _t(2.0, 6.0, invert=True),
+     "Bom: abaixo de 2× · Médio: 2×–6× · Atenção: acima de 6×. "
+     "Empresas de crescimento muito elevado podem justificar valores mais altos."),
+    ("Price / Book", "priceToBookRatio", "x", None,
+     "Bom: 1×–3× · Médio: 3×–6× · Atenção: acima de 6×, ou abaixo de 1× sem motivo aparente."),
     ("PEG", "priceToEarningsGrowthRatio", "x", _t(1.0, 2.0, invert=True),
-     "PER / crescimento do EPS. < 1 costuma indicar subavaliação."),
-    ("EV / EBITDA", "evToEBITDA", "x", None, "Comparar com a própria média histórica."),
-    ("Dividend yield", "dividendYield", "pct", None, "Relevante para Dividend Plays."),
+     "Bom: abaixo de 1 · Médio: 1–2 · Atenção: acima de 2."),
+    ("EV / EBITDA", "evToEBITDA", "x", _t(10.0, 15.0, invert=True),
+     "Bom: abaixo de 10× · Médio: 10×–15× · Atenção: acima de 15×."),
+    ("Dividend yield", "dividendYield", "pct", None,
+     "2%–6% costuma ser saudável; abaixo disso é normal num perfil de crescimento; "
+     "acima de 8%–10% pode sinalizar risco de corte do dividendo."),
     ("SBC / Receita", "sbcToRevenue", "pct", _t(0.04, 0.08, invert=True),
-     "As 10 maiores empresas pagam ~4% da receita em stock-based compensation."),
+     "Benchmark de mercado: as maiores tecnológicas pagam tipicamente ~4% da receita "
+     "em stock-based compensation; acima de 8% é elevado."),
 ]
 
 # Séries para as quais faz sentido mostrar a taxa média anual (CAGR)

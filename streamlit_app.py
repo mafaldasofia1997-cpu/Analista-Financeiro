@@ -612,14 +612,14 @@ with tab_ratios:
                     "Rácio": label,
                     last: _fmt_val(v, kind),
                     "Histórico": extra,
-                    "Referência do livro": nota,
+                    "Como interpretar": nota,
                 }
             )
         if rows:
             st.dataframe(pd.DataFrame(rows).set_index("Rácio"), width="stretch")
             st.caption(
-                "🟢 dentro da referência do livro · 🟡 aceitável · 🔴 fora · "
-                "⚪ sem referência fixa (comparar com histórico / indústria)"
+                "🟢 bom · 🟡 médio · 🔴 atenção · ⚪ sem referência fixa "
+                "(comparar com o histórico da própria ação e com a indústria)"
             )
         else:
             st.info("Sem rácios disponíveis nesta periodicidade (tenta **Anual**).")

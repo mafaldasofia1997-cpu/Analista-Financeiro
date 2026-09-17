@@ -196,7 +196,7 @@ def _perspetivas(symbol: str) -> tuple[str, str]:
         )
         partes.append(f"**Ratings recentes:** {recentes}")
     partes.append(
-        "*Nota:* o livro avisa que *price targets* a 12 meses são pouco fiáveis; usar "
+        "*Nota:* *price targets* a 12 meses são pouco fiáveis; usar "
         "as estimativas apenas como referência para a **História de Investimento**."
     )
     return "8. Perspetivas", "\n\n".join(partes) if partes else "Sem dados de analistas."
@@ -265,7 +265,7 @@ def _conclusao(mdf: pd.DataFrame | None) -> tuple[str, str]:
     play, _ = fundamentals.classify_play(mdf)
     pontos.append(f"Tipo de *play*: {play}")
     pontos.append(
-        "**Regra do livro:** só é oportunidade se o ganho esperado for **> 50%**. "
+        "**Regra prática:** só é oportunidade se o ganho esperado for **> 50%**. "
         "Cruzar esta síntese com os fatores de risco e a comparação com concorrentes."
     )
     return "Conclusão — comprar / manter / evitar", "\n".join(f"- {p}" for p in pontos)
